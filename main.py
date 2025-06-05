@@ -1,8 +1,15 @@
-# Main entry point for the Gesture Gallery application
-# This uses our modular architecture with separate components
-from src.app_controller import GestureGallery
+"""
+Main application file for the Photo Gallery App with Gesture Recognition
+"""
+import sys
+from PyQt5.QtWidgets import QApplication
+from components.app import PhotoGalleryApp
+
+def main():
+    app = QApplication(sys.argv)
+    window = PhotoGalleryApp()
+    window.show()
+    sys.exit(app.exec_())
 
 if __name__ == "__main__":
-    # Create and run the gesture gallery application
-    app = GestureGallery()
-    app.run()
+    main()
