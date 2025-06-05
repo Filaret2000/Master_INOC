@@ -14,6 +14,7 @@ class GalleryComponent(QWidget):
         self.current_index = 0
         self.zoom_factor = 1.0
         self.rotation = 0
+        self.fullscreen_mode = False  # Track if we're in fullscreen mode
         
         # Load image paths
         self.load_images()
@@ -26,12 +27,18 @@ class GalleryComponent(QWidget):
         
     def setup_ui(self):
         # Create layout
-        layout = QVBoxLayout(self)
+        self.main_layout = QVBoxLayout(self)
+        
+        # Image counter label at the top
+        self.image_counter = QLabel("")
+        self.image_counter.setAlignment(Qt.AlignCenter)
+        self.image_counter.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px;")
+        self.main_layout.addWidget(self.image_counter)
         
         # Image display
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.image_label, 1)
+        self.main_layout.addWidget(self.image_label, 1)
         
         # Controls layout
         controls_layout = QHBoxLayout()
@@ -46,27 +53,28 @@ class GalleryComponent(QWidget):
         self.next_button.clicked.connect(self.next_image)
         controls_layout.addWidget(self.next_button)
         
-        # Zoom in button
-        self.zoom_in_button = QPushButton("Zoom In")
+        # Zoom in button (renamed to Increase)
+        self.zoom_in_button = QPushButton("Increase")
         self.zoom_in_button.clicked.connect(self.zoom_in)
         controls_layout.addWidget(self.zoom_in_button)
         
-        # Zoom out button
-        self.zoom_out_button = QPushButton("Zoom Out")
+        # Zoom out button (renamed to Decrease)
+        self.zoom_out_button = QPushButton("Decrease")
         self.zoom_out_button.clicked.connect(self.zoom_out)
         controls_layout.addWidget(self.zoom_out_button)
         
-        # Home button
-        self.home_button = QPushButton("Home")
-        self.home_button.clicked.connect(self.go_home)
-        controls_layout.addWidget(self.home_button)
+        self.main_layout.addLayout(controls_layout)
         
-        # Undo button
-        self.undo_button = QPushButton("Undo")
-        self.undo_button.clicked.connect(self.undo_action)
-        controls_layout.addWidget(self.undo_button)
+        # Store all buttons for hiding/showing
+        self.all_buttons = [
+            self.prev_button,
+            self.next_button,
+            self.zoom_in_button,
+            self.zoom_out_button
+        ]
         
-        layout.addLayout(controls_layout)
+        # Store control layout for show/hide functionality
+        self.controls_layout = controls_layout
         
         # Display first image if available
         if self.image_paths:
@@ -92,6 +100,9 @@ class GalleryComponent(QWidget):
         
         # Get current image path
         image_path = self.image_paths[self.current_index]
+        
+        # Update image counter
+        self.image_counter.setText(f"Image {self.current_index + 1} of {len(self.image_paths)}")
         
         # Load image
         pixmap = QPixmap(image_path)
@@ -172,57 +183,44 @@ class GalleryComponent(QWidget):
     def zoom_in(self):
         self.add_to_history()
         
-        # Increase zoom factor
+        # Increase zoom factor by 20%
         self.zoom_factor *= 1.2
         
-        # Display the image
+        # Cap the maximum zoom level to 5x
+        if self.zoom_factor > 5.0:
+            self.zoom_factor = 5.0
+            
+        # Update display with new zoom
         self.display_image()
+        
+        # Only go into fullscreen mode if zoom is significantly increased
+        if self.zoom_factor >= 1.5 and not self.fullscreen_mode:
+            self.fullscreen_mode = True
+            # Hide buttons when in fullscreen mode
+            for button in self.all_buttons:
+                button.setVisible(False)
     
     def zoom_out(self):
         self.add_to_history()
         
-        # Decrease zoom factor
+        # Decrease zoom factor by 20%
         self.zoom_factor /= 1.2
         
-        # Display the image
-        self.display_image()
-    
-    def go_home(self):
-        if not self.image_paths:
-            return
+        # Minimum zoom level
+        if self.zoom_factor < 0.5:
+            self.zoom_factor = 0.5
             
-        self.add_to_history()
-        
-        # Reset to first image
-        self.current_index = 0
-        
-        # Reset transformations
-        self.zoom_factor = 1.0
-        self.rotation = 0
-        
-        # Display the image
+        # Update display with new zoom
         self.display_image()
+        
+        # Exit fullscreen mode if zoom is reduced enough
+        if self.zoom_factor <= 1.0 and self.fullscreen_mode:
+            self.fullscreen_mode = False
+            # Show buttons again when exiting fullscreen
+            for button in self.all_buttons:
+                button.setVisible(True)
     
-    def undo_action(self):
-        # Restore previous state from history
-        if self.history:
-            state = self.history.pop()
-            self.current_index = state['index']
-            self.zoom_factor = state['zoom']
-            self.rotation = state['rotation']
-            
-            # Display the image
-            self.display_image()
-    
-    def confirm_action(self):
-        # Placeholder for OK gesture
-        pass
-    
-    def cancel_action(self):
-        # Placeholder for Cancel gesture
-        self.zoom_factor = 1.0
-        self.rotation = 0
-        self.display_image()
+    # Only keeping methods related to next, previous, help, increase, and decrease gestures
     
     def resizeEvent(self, event):
         super().resizeEvent(event)

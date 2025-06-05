@@ -23,7 +23,8 @@ class PhotoGalleryApp(QMainWindow):
         # Initialize components
         self.gallery = GalleryComponent(os.path.join("images"))
         self.gesture_recognizer = GestureRecognizer()
-        self.debug_window = DebugWindow()
+        # Make debug window a child of the main window to ensure it closes with parent
+        self.debug_window = DebugWindow(self)
         
         # Set up UI
         self.setup_ui()
@@ -43,16 +44,54 @@ class PhotoGalleryApp(QMainWindow):
         # Initialize help window
         self.help_window = None
         
+        # Position debug window to the right of the main window
+        # and make it visible on startup
+        self.positionDebugWindow()
+        
+    def positionDebugWindow(self):
+        """Position debug window to the right of the main window"""
+        # First show the debug window to make sure it's initialized
+        self.debug_window.show()
+        
+        # Position debug window to the right of main window
+        main_pos = self.geometry()
+        debug_pos = self.debug_window.geometry()
+        
+        # Set debug window position
+        self.debug_window.setGeometry(
+            main_pos.x() + main_pos.width() + 10,  # 10px gap between windows
+            main_pos.y(),
+            debug_pos.width(),
+            debug_pos.height()
+        )
+        
+    def closeEvent(self, event):
+        """Override close event to close all associated windows"""
+        # Forcefully terminate the gesture recognizer and its camera
+        self.gesture_timer.stop()
+        if hasattr(self.gesture_recognizer, 'cap') and self.gesture_recognizer.cap is not None:
+            self.gesture_recognizer.cap.release()
+        
+        # Close debug window - make sure to use close() and also deleteLater()
+        if self.debug_window:
+            self.debug_window.close()
+            self.debug_window.deleteLater()
+        
+        # Close help window if it exists
+        if self.help_window and self.help_window.isVisible():
+            self.help_window.close()
+            self.help_window.deleteLater()
+            
+        # Continue with normal close
+        super().closeEvent(event)
+        
     def setup_ui(self):
         # Create central widget and layout
         central_widget = QWidget()
         main_layout = QHBoxLayout(central_widget)
         
         # Add gallery to the main layout
-        main_layout.addWidget(self.gallery, 3)
-        
-        # Add debug window to the right side
-        main_layout.addWidget(self.debug_window, 1)
+        main_layout.addWidget(self.gallery)
         
         # Set central widget
         self.setCentralWidget(central_widget)
@@ -76,24 +115,18 @@ class PhotoGalleryApp(QMainWindow):
         # Help action
         help_action = QAction("&Gesture Commands", self)
         help_action.setShortcut("F1")
-        help_action.triggered.connect(self.show_help)
+        help_action.triggered.connect(self.toggle_help_and_debug)  # Changed to toggle both help and debug
         help_menu.addAction(help_action)
         
     def connect_signals(self):
-        # Connect gesture recognition signals to gallery actions
+        # Connect gesture recognizer signals to actions (only keeping next, previous, help, increase, decrease)
         self.gesture_recognizer.next_signal.connect(self.gallery.next_image)
         self.gesture_recognizer.previous_signal.connect(self.gallery.previous_image)
-        self.gesture_recognizer.increase_signal.connect(self.gallery.zoom_in)
-        self.gesture_recognizer.decrease_signal.connect(self.gallery.zoom_out)
-        self.gesture_recognizer.ok_signal.connect(self.gallery.confirm_action)
-        self.gesture_recognizer.cancel_signal.connect(self.gallery.cancel_action)
-        self.gesture_recognizer.menu_signal.connect(self.toggle_menu)
-        self.gesture_recognizer.home_signal.connect(self.gallery.go_home)
-        self.gesture_recognizer.undo_signal.connect(self.gallery.undo_action)
-        self.gesture_recognizer.help_signal.connect(self.show_help)
-        
-        # Connect debug output
+        self.gesture_recognizer.help_signal.connect(self.toggle_debug_window)
+        self.gesture_recognizer.increase_signal.connect(self.increase_size)
+        self.gesture_recognizer.decrease_signal.connect(self.decrease_size)
         self.gesture_recognizer.debug_frame_signal.connect(self.debug_window.update_frame)
+        self.gesture_recognizer.debug_text_signal.connect(self.debug_window.update_debug_text)
         self.gesture_recognizer.status_signal.connect(self.update_status)
         
     def process_gestures(self):
@@ -101,10 +134,36 @@ class PhotoGalleryApp(QMainWindow):
         
     def update_status(self, status_text):
         self.status_label.setText(status_text)
+    
+    def toggle_debug_window(self):
+        # Toggle only debug window visibility
+        if self.debug_window.isVisible():
+            self.debug_window.hide()
+        else:
+            self.debug_window.show()
+            # Reposition the debug window if it's being shown
+            self.positionDebugWindow()
+    
+    def toggle_help_and_debug(self):
+        # Toggle debug window visibility
+        self.toggle_debug_window()
         
-    def toggle_menu(self):
-        # Implement menu toggle functionality
-        pass
+        # Also show help window with gesture commands
+        self.show_help()
+        
+    def increase_size(self):
+        # Increase the image size in gallery
+        self.gallery.zoom_in()
+        self.status_label.setText("Image size increased")
+        
+    def decrease_size(self):
+        # Decrease the image size in gallery
+        self.gallery.zoom_out()
+        self.status_label.setText("Image size decreased")
+        
+    def on_ok_gesture(self):
+        # Handle OK gesture - simple confirmation action
+        self.status_label.setText("OK gesture recognized")
     
     def show_help(self):
         # Show help window with gesture commands
@@ -121,6 +180,12 @@ class PhotoGalleryApp(QMainWindow):
             title.setAlignment(Qt.AlignCenter)
             title.setFont(QFont("Arial", 16, QFont.Bold))
             layout.addWidget(title)
+            
+            # Add debug toggle information
+            debug_info = QLabel("<b>Help gesture</b> also toggles the debug window visibility.")
+            debug_info.setAlignment(Qt.AlignCenter)
+            debug_info.setStyleSheet("color: #0066cc;")
+            layout.addWidget(debug_info)
             
             scroll_area = QScrollArea()
             scroll_area.setWidgetResizable(True)

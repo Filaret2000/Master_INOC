@@ -1,20 +1,24 @@
 """
 Debug window component for displaying camera feed and gesture detection visualization
 """
-from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
-from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QMainWindow, QTextEdit, QScrollArea
+from PyQt5.QtGui import QPixmap, QImage, QIcon, QFont
 from PyQt5.QtCore import Qt, pyqtSlot
 
-class DebugWindow(QWidget):
-    def __init__(self):
-        super().__init__()
+class DebugWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Gesture Recognition Debug")
+        
+        # Set window size and position
+        self.setMinimumSize(640, 720)
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
         
         # Set up UI
-        self.setup_ui()
-    
-    def setup_ui(self):
-        # Create layout
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(central_widget)
         
         # Title label
         title_label = QLabel("Debug View")
@@ -24,13 +28,28 @@ class DebugWindow(QWidget):
         # Video display
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setMinimumSize(320, 240)
+        self.video_label.setMinimumSize(460, 360)
         layout.addWidget(self.video_label)
         
+        # Debug text area label
+        debug_label = QLabel("Debug Information:")
+        debug_label.setAlignment(Qt.AlignLeft)
+        layout.addWidget(debug_label)
+        
+        # Debug text area - scrollable
+        self.debug_text = QTextEdit()
+        self.debug_text.setReadOnly(True)
+        self.debug_text.setMinimumHeight(200)
+        self.debug_text.setFont(QFont("Courier New", 10))
+        layout.addWidget(self.debug_text)
+        
         # Description
-        desc_label = QLabel("This window shows the video feed with detected landmarks for debugging purposes.")
+        desc_label = QLabel("This window shows the video feed with detected landmarks and debug information.")
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
+        
+        # Show by default
+        self.show()
     
     @pyqtSlot(QImage)
     def update_frame(self, frame):
@@ -44,6 +63,13 @@ class DebugWindow(QWidget):
         
         # Set the pixmap to the label
         self.video_label.setPixmap(pixmap)
+        
+    @pyqtSlot(str)
+    def update_debug_text(self, text):
+        """Update the debug text area with new information"""
+        self.debug_text.setText(text)
+        # Automatically scroll to the bottom to show latest debug info
+        self.debug_text.verticalScrollBar().setValue(self.debug_text.verticalScrollBar().maximum())
     
     def resizeEvent(self, event):
         """Handle resize events to update the frame display"""
