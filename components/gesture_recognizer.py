@@ -1,559 +1,369 @@
 """
-Gesture Recognizer component that processes camera input and detects gestures
+Gesture recognizer component for detecting and interpreting hand gestures
 """
 import cv2
 import numpy as np
-import mediapipe as mp
 import time
-from PyQt5.QtCore import QObject, pyqtSignal, QThread, Qt
+import mediapipe as mp
+from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtGui import QImage
 
 class GestureRecognizer(QObject):
-    # Define signals for each gesture command
+    """
+    Gesture recognizer class using MediaPipe for hand tracking and gesture detection
+    """
+    # Define signals that will be emitted when gestures are recognized
     next_signal = pyqtSignal()
     previous_signal = pyqtSignal()
-    increase_signal = pyqtSignal()  # Signal for increase gesture in zoom mode
-    decrease_signal = pyqtSignal()  # Signal for decrease gesture in zoom mode
     help_signal = pyqtSignal()
-    debug_frame_signal = pyqtSignal(QImage)
-    debug_text_signal = pyqtSignal(str)  # Signal for sending debug text to debug window
+    increase_signal = pyqtSignal()
+    decrease_signal = pyqtSignal()
     status_signal = pyqtSignal(str)
+    debug_frame_signal = pyqtSignal(QImage)
+    debug_text_signal = pyqtSignal(str)
     
     def __init__(self):
         super().__init__()
         
-        # Initialize MediaPipe Pose and Hands modules
-        self.mp_pose = mp.solutions.pose
-        self.mp_hands = mp.solutions.hands
+        # Initialize MediaPipe solutions
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
+        self.mp_hands = mp.solutions.hands
+        self.mp_pose = mp.solutions.pose
         
-        # Initialize pose and hands detectors
-        self.pose = self.mp_pose.Pose(
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5)
-            
-        self.hands = self.mp_hands.Hands(
-            model_complexity=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-            max_num_hands=2)
-        
-        # Initialize camera
+        # Initialize webcam
         self.cap = cv2.VideoCapture(0)
-        if not self.cap.isOpened():
-            self.status_signal.emit("Error: Could not open camera")
-            return
-            
-        # Set camera resolution
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         
-        # Gesture recognition parameters
-        self.touch_threshold = 0.08  # Distance threshold for touch detection
-        self.sequence = []  # Store sequence of touches
-        self.sequence_start_time = 0
-        self.sequence_timeout = 2.0  # Seconds before sequence resets
-        self.last_touch_time = 0  # Track time of last touch for double tap detection
-        self.double_tap_threshold = 0.8  # Maximum seconds between taps to be considered a double tap
+        # Initialize MediaPipe Hands and Pose detection
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
         
-        # Starting pose detection
-        self.in_starting_pose = False  # Flag to track if hand is in starting pose
-        self.waiting_for_gesture = False  # Flag to track if we're waiting for a gesture after starting pose
-        self.gesture_performed = False  # Flag to track if a gesture was performed
+        self.pose = self.mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
         
-        # Special mode for increase/decrease gestures
-        self.in_zoom_mode = False  # Flag to track if both hands are in the special zoom mode pose
+        # Initialize variables for gesture detection
+        self.last_gesture_time = time.time()
+        self.gesture_cooldown = 1.0  # Cooldown period between gestures in seconds
         
-        # Track if right hand was visible in previous frame
-        self.right_hand_was_visible = False
-        self.hands_results = None  # Store hand detection results
+        # Frame dimensions
+        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # State tracking variables
-        self.last_gesture = None
-        self.gesture_start_time = 0
-        self.sequence = []
-        self.sequence_start_time = 0
-        self.touch_threshold = 0.1  # Distance threshold for touch detection
-        
-        # Debug info
+        # Debug information
         self.debug_info = ""
         
-        # Start the worker thread
-        self.running = True
+        # Touch detection thresholds
+        self.touch_threshold = 0.08  # General threshold for detecting touch
+        self.finger_touch_threshold = 0.05  # More precise threshold for finger-to-finger touches
         
+        # State variables for double tap detection (for help gesture)
+        self.help_state = "WAITING"  # States: WAITING, FIRST_TAP, BETWEEN_TAPS, SECOND_TAP
+        self.first_tap_time = 0
+        self.help_max_time = 1.5  # Maximum time to complete double tap (seconds)
+        self.help_min_between_time = 0.3  # Minimum time between taps (seconds)
+        
+        # Zoom mode state
+        self.zoom_mode_active = False
+        
+        # Emit initial status
+        self.status_signal.emit("Gesture recognition started")
+        
+    def release(self):
+        """Release camera resources"""
+        if hasattr(self, 'cap') and self.cap is not None:
+            self.cap.release()
+    
     def process_frame(self):
+        """Process the current frame and detect gestures"""
         if not self.cap.isOpened():
+            self.status_signal.emit("Error: Camera not available")
             return
-            
-        ret, frame = self.cap.read()
-        if not ret:
+        
+        # Read frame from webcam
+        success, frame = self.cap.read()
+        if not success:
+            self.status_signal.emit("Error: Couldn't read frame from camera")
             return
-            
-        # Flip the frame horizontally for a selfie-view
+        
+        # Mirror the frame horizontally for more intuitive interaction
         frame = cv2.flip(frame, 1)
         
-        # Convert the BGR image to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Convert the frame from BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Process with MediaPipe
-        pose_results = self.pose.process(rgb_frame)
-        self.hands_results = self.hands.process(rgb_frame)
-        hands_results = self.hands_results
+        # Process the frame with MediaPipe Hands and Pose
+        hand_results = self.hands.process(frame_rgb)
+        pose_results = self.pose.process(frame_rgb)
         
-        # Create debug frame
+        # Create a copy of the frame for visualization
         debug_frame = frame.copy()
         
-        # Draw pose landmarks
+        # Clear debug info for this frame - simplified version
+        self.debug_info = "Gesture Recognition Status\n"
+        self.debug_info += "======================\n"
+        
+        # Check for gestures if the cooldown period has passed
+        current_time = time.time()
+        
+        if current_time - self.last_gesture_time >= self.gesture_cooldown:
+            # Analyze hand poses and detect gestures
+            self.detect_gestures(hand_results, pose_results, debug_frame)
+        
+        # Draw hand landmarks on debug frame
+        if hand_results.multi_hand_landmarks:
+            for hand_landmarks in hand_results.multi_hand_landmarks:
+                self.mp_drawing.draw_landmarks(
+                    debug_frame,
+                    hand_landmarks,
+                    self.mp_hands.HAND_CONNECTIONS,
+                    self.mp_drawing_styles.get_default_hand_landmarks_style(),
+                    self.mp_drawing_styles.get_default_hand_connections_style()
+                )
+        
+        # Draw pose landmarks on debug frame
         if pose_results.pose_landmarks:
             self.mp_drawing.draw_landmarks(
                 debug_frame,
                 pose_results.pose_landmarks,
                 self.mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style())
+                self.mp_drawing_styles.get_default_pose_landmarks_style()
+            )
         
-        # Draw hand landmarks
-        if hands_results.multi_hand_landmarks:
-            for hand_landmarks in hands_results.multi_hand_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    debug_frame,
-                    hand_landmarks,
-                    self.mp_hands.HAND_CONNECTIONS,
-                    landmark_drawing_spec=self.mp_drawing_styles.get_default_hand_landmarks_style())
-        
-        # Process gestures if both pose and hands are detected
-        if pose_results.pose_landmarks and hands_results.multi_hand_landmarks:
-            self.process_gestures(pose_results.pose_landmarks, hands_results.multi_hand_landmarks)
-        
-        # Send debug info to debug window text area instead of drawing on frame
-        self.debug_text_signal.emit(self.debug_info)
-        
-        # Convert to QImage for display in debug window
+        # Convert the debug frame to QImage for display in debug window
         h, w, ch = debug_frame.shape
         bytes_per_line = ch * w
-        qt_image = QImage(debug_frame.data, w, h, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+        convert_to_qt_format = QImage(debug_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        qt_image = convert_to_qt_format.scaled(640, 480)
         
-        # Emit the debug frame without text overlay
+        # Emit the signals for debug window
         self.debug_frame_signal.emit(qt_image)
-    
-    def detect_starting_pose(self, right_hand):
-        """Detect if right hand is in starting pose: fist with index finger pointing up"""
-        if right_hand is None:
-            return False
-            
-        # Get landmarks for each finger
-        index_tip = right_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-        index_pip = right_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_PIP]
-        index_mcp = right_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_MCP]
-        
-        # These should be curled in a fist
-        middle_tip = right_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-        ring_tip = right_hand.landmark[self.mp_hands.HandLandmark.RING_FINGER_TIP]
-        pinky_tip = right_hand.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
-        
-        # Knuckle positions for reference
-        middle_mcp = right_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
-        ring_mcp = right_hand.landmark[self.mp_hands.HandLandmark.RING_FINGER_MCP]
-        pinky_mcp = right_hand.landmark[self.mp_hands.HandLandmark.PINKY_MCP]
-        
-        # Check if index is extended (pointing up) - more reliable check
-        # The index finger should be significantly higher than the knuckle
-        index_extended = index_tip.y < index_mcp.y - 0.1
-        
-        # Check if other fingers are curled in (should be below their respective MCPs)
-        fingers_curled = (
-            middle_tip.y > middle_mcp.y and
-            ring_tip.y > ring_mcp.y and
-            pinky_tip.y > pinky_mcp.y
-        )
-        
-        is_in_starting_pose = index_extended and fingers_curled
-        
-        return is_in_starting_pose
-        
-    def detect_left_hand_spread_fingers(self, left_hand):
-        """Detect if left hand has all fingers spread with palm facing the user"""
-        if left_hand is None:
-            return False
-            
-        # Get landmarks for each finger tip
-        thumb_tip = left_hand.landmark[self.mp_hands.HandLandmark.THUMB_TIP]
-        index_tip = left_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-        middle_tip = left_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-        ring_tip = left_hand.landmark[self.mp_hands.HandLandmark.RING_FINGER_TIP]
-        pinky_tip = left_hand.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
-        
-        # Get landmarks for each finger MCP (knuckle)
-        thumb_mcp = left_hand.landmark[self.mp_hands.HandLandmark.THUMB_CMC]
-        index_mcp = left_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_MCP]
-        middle_mcp = left_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
-        ring_mcp = left_hand.landmark[self.mp_hands.HandLandmark.RING_FINGER_MCP]
-        pinky_mcp = left_hand.landmark[self.mp_hands.HandLandmark.PINKY_MCP]
-        
-        # Check if all fingers are extended (tips should be above the knuckles)
-        fingers_extended = (
-            thumb_tip.y < thumb_mcp.y and
-            index_tip.y < index_mcp.y and
-            middle_tip.y < middle_mcp.y and
-            ring_tip.y < ring_mcp.y and
-            pinky_tip.y < pinky_mcp.y
-        )
-        
-        # Check if fingers are reasonably spread apart
-        # Calculate distances between adjacent fingertips
-        thumb_index_dist = abs(thumb_tip.x - index_tip.x)
-        index_middle_dist = abs(index_tip.x - middle_tip.x)
-        middle_ring_dist = abs(middle_tip.x - ring_tip.x)
-        ring_pinky_dist = abs(ring_tip.x - pinky_tip.x)
-        
-        # Fingers should have some minimum distance between them
-        min_dist = 0.03
-        fingers_spread = (
-            thumb_index_dist > min_dist and
-            index_middle_dist > min_dist and
-            middle_ring_dist > min_dist and
-            ring_pinky_dist > min_dist
-        )
-        
-        return fingers_extended and fingers_spread
-        
-    def detect_left_hand_fist(self, left_hand):
-        """Detect if left hand is in a fist"""
-        if left_hand is None:
-            return False
-            
-        # Get landmarks for each finger tip
-        index_tip = left_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-        middle_tip = left_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-        ring_tip = left_hand.landmark[self.mp_hands.HandLandmark.RING_FINGER_TIP]
-        pinky_tip = left_hand.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
-        
-        # Get landmarks for palm
-        wrist = left_hand.landmark[self.mp_hands.HandLandmark.WRIST]
-        middle_mcp = left_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
-        
-        # Fingers should be curled in (tips should be below the middle of palm)
-        palm_mid_y = (wrist.y + middle_mcp.y) / 2
-        fingers_curled = (
-            index_tip.y > palm_mid_y and
-            middle_tip.y > palm_mid_y and
-            ring_tip.y > palm_mid_y and
-            pinky_tip.y > palm_mid_y
-        )
-        
-        return fingers_curled
-        
-    def detect_left_hand_facing_user(self, left_hand):
-        """Detect if left hand is facing the user with fingers spread"""
-        if left_hand is None:
-            return False
-            
-        # For the hand to be facing the user, the z-coordinates (depth) of the knuckles
-        # should be closer to the camera than the wrist
-        wrist_z = left_hand.landmark[self.mp_hands.HandLandmark.WRIST].z
-        mcp_z = left_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP].z
-        
-        # Check if palm is facing the camera (z-depth difference)
-        is_palm_facing = mcp_z < wrist_z
-        
-        # Get landmarks for each finger tip
-        index_tip = left_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-        middle_tip = left_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-        ring_tip = left_hand.landmark[self.mp_hands.HandLandmark.RING_FINGER_TIP]
-        pinky_tip = left_hand.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
-        
-        # Get landmarks for each finger MCP (knuckle)
-        index_mcp = left_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_MCP]
-        middle_mcp = left_hand.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
-        ring_mcp = left_hand.landmark[self.mp_hands.HandLandmark.RING_FINGER_MCP]
-        pinky_mcp = left_hand.landmark[self.mp_hands.HandLandmark.PINKY_MCP]
-        
-        # Check if fingers are spread
-        is_index_extended = index_tip.y < index_mcp.y
-        is_middle_extended = middle_tip.y < middle_mcp.y
-        is_ring_extended = ring_tip.y < ring_mcp.y
-        is_pinky_extended = pinky_tip.y < pinky_mcp.y
-        
-        # Consider hand to be facing user with spread fingers if palm is facing and at least 3 fingers are extended
-        fingers_extended = sum([is_index_extended, is_middle_extended, is_ring_extended, is_pinky_extended])
-        
-        self.debug_info += f"\nLeft hand facing: {is_palm_facing}, fingers extended: {fingers_extended}"
-        return is_palm_facing and fingers_extended >= 3
-            
-    def process_gestures(self, pose_landmarks, hand_landmarks):
-        """Process detected hand and pose landmarks for gesture recognition"""
-        # Find right hand and left hand
-        right_hand = None
-        left_hand = None
-        right_index_tip = None
-        
-        # Debug information
-        self.debug_info = f"Detected {len(hand_landmarks)} hand(s)"
-        
-        # Use multi_handedness from hands_results instead
-        if hasattr(self.hands_results, 'multi_handedness') and self.hands_results.multi_handedness:
-            for i, handedness in enumerate(self.hands_results.multi_handedness):
-                # Check if we have enough hand landmarks
-                if i < len(hand_landmarks):
-                    # Get handedness label (LEFT or RIGHT)
-                    hand_label = handedness.classification[0].label
-                    
-                    if hand_label == "Right":
-                        right_hand = hand_landmarks[i]
-                        # Get right index finger tip for touch detection
-                        if right_hand:
-                            right_index_tip = right_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-                        self.debug_info += "\nRight hand detected"
-                    else:  # Left hand
-                        left_hand = hand_landmarks[i]
-                        self.debug_info += "\nLeft hand detected"
-        
-        # If no pose landmarks detected, can't do anything with pose, but don't reset sequence
-        if not pose_landmarks:
-            self.debug_info += "\nNo pose landmarks detected"
+        self.debug_text_signal.emit(self.debug_info)
+
+    def detect_gestures(self, hand_results, pose_results, debug_frame):
+        """Detect various gestures based on hand and pose landmarks"""
+        # Check if we have both hand landmarks and pose landmarks
+        if not hand_results.multi_hand_landmarks or not pose_results.pose_landmarks:
+            self.debug_info += "No hand or pose landmarks detected\n"
             return
+        
+        # Get pose landmarks
+        pose_landmarks = pose_results.pose_landmarks.landmark
+        
+        # Process hands
+        left_hand = None
+        right_hand = None
+        
+        # Identify left and right hands based on MediaPipe's classification
+        for i, hand_landmarks in enumerate(hand_results.multi_hand_landmarks):
+            if i >= len(hand_results.multi_handedness):
+                continue
+                
+            # Extract handedness information correctly
+            handedness = hand_results.multi_handedness[i].classification[0].label
+            landmarks = hand_landmarks.landmark
             
-        # Check for starting pose (right hand fist with index finger pointing up)
-        is_in_starting_pose = False
+            # Store landmarks based on handedness
+            if handedness == "Left":  # This is actually right hand in mirrored view
+                right_hand = landmarks
+            elif handedness == "Right":  # This is actually left hand in mirrored view
+                left_hand = landmarks
+        
+        # Add simplified debug information about detected hands
+        self.debug_info += f"Left hand detected: {left_hand is not None}\n"
+        self.debug_info += f"Right hand detected: {right_hand is not None}\n"
+        if self.zoom_mode_active:
+            self.debug_info += f"ZOOM MODE ACTIVE\n"
+        
+        # Detect Help gesture (double tap on right temple)
         if right_hand:
-            is_in_starting_pose = self.detect_starting_pose(right_hand)
-            if is_in_starting_pose:
-                self.debug_info += "\nStarting pose detected"
+            self.detect_help_gesture(right_hand, pose_landmarks)
         
-        # Check for left hand facing user with fingers spread
-        left_hand_facing_user = False
+        # Detect Zoom Mode Activation (left palm facing camera)
         if left_hand:
-            left_hand_facing_user = self.detect_left_hand_facing_user(left_hand)
-            if left_hand_facing_user:
-                self.debug_info += "\nLeft hand facing user detected"
-        
-        # Special gesture mode logic - requires left hand facing user with fingers spread
-        if is_in_starting_pose and left_hand_facing_user and self.waiting_for_gesture:
-            if not self.in_zoom_mode:
-                self.in_zoom_mode = True
-                self.debug_info += "\n*** ENTERING INCREASE/DECREASE MODE ***"
-                self.status_signal.emit("Increase/decrease mode activated")
-        
-        # Track if right hand was visible in the previous frame
-        self.right_hand_was_visible = (right_hand is not None)
-        
-        # STATE MACHINE LOGIC:
-        # 1. If right hand is missing - CONTINUE looking for gestures, don't reset
-        # 2. If right hand is visible but NOT in starting pose - ONLY THEN reset the sequence
-        # 3. After a gesture is performed, require starting pose again before next gesture
-        
-        # Important states to track:
-        # - waiting_for_gesture: We've seen the starting pose and are waiting for a gesture
-        # - gesture_performed: We've performed a gesture and need to see starting pose again
-        
-        # Case 1: If right hand is visible but NOT in starting pose, reset sequence
-        if right_hand and not is_in_starting_pose and self.waiting_for_gesture:
-            self.debug_info += "\nHand visible but NOT in starting pose - resetting sequence"
-            self.sequence = []
+            self.detect_zoom_mode(left_hand)
             
-        # Case 2: If we haven't seen starting pose yet or need to see it again after gesture
-        if not self.waiting_for_gesture or self.gesture_performed:
-            if is_in_starting_pose:
-                # Starting pose detected
-                self.waiting_for_gesture = True
-                if self.gesture_performed:
-                    self.gesture_performed = False
-                    self.debug_info += "\nStarting pose detected again after gesture. Ready for new gesture."
-                    self.status_signal.emit("Ready for new gesture!")
-                else:
-                    self.debug_info += "\nStarting pose detected. Ready for gesture."
-                    self.status_signal.emit("Ready for gesture!")
+        # If zoom mode is active, detect zoom in/out gestures
+        if self.zoom_mode_active and left_hand and right_hand:
+            self.detect_zoom_gestures(left_hand, right_hand)
+        
+        # Detect Next gesture (touch left hip with right index)
+        if right_hand and pose_landmarks:
+            self.detect_next_gesture(right_hand, pose_landmarks)
+            
+        # Detect Previous gesture (touch right hip with right index)
+        if right_hand and pose_landmarks:
+            self.detect_previous_gesture(right_hand, pose_landmarks)
+
+    def calculate_distance(self, point1, point2):
+        """Calculate Euclidean distance between two points in 3D space"""
+        return np.sqrt((point1.x - point2.x)**2 + 
+                    (point1.y - point2.y)**2 + 
+                    (point1.z - point2.z)**2)
+
+    def is_finger_extended(self, landmarks, finger_tip_idx, finger_pip_idx):
+        """Check if a finger is extended by comparing the y-coordinates of tip and PIP joint"""
+        return landmarks[finger_tip_idx].y < landmarks[finger_pip_idx].y
+
+    def update_debug_and_trigger(self, gesture_name):
+        """Update the last gesture time, add to debug info, and emit status signal"""
+        self.last_gesture_time = time.time()
+        self.debug_info += f"GESTURE DETECTED: {gesture_name}\n"
+        self.status_signal.emit(f"Gesture: {gesture_name}")
+        
+    def detect_help_gesture(self, right_hand, pose_landmarks):
+        """Detect Help gesture: Double tap on right temple with right index finger"""
+        # Get the coordinates of the right index finger tip and the right temple area
+        index_tip = right_hand[8]  # Index finger tip
+        temple = pose_landmarks[self.mp_pose.PoseLandmark.RIGHT_EYE_OUTER.value]  # Right temple area
+        
+        # Calculate distance between index tip and temple
+        distance = self.calculate_distance(index_tip, temple)
+        
+        # Simplified debug info - removed detailed measurements
+        
+        # State machine for double tap detection
+        current_time = time.time()
+        
+        # Check for timeout in any intermediate state
+        if self.help_state != "WAITING" and current_time - self.first_tap_time > self.help_max_time:
+            # Simplified - removed detailed state tracking
+            self.help_state = "WAITING"
+        
+        # State machine logic
+        if self.help_state == "WAITING":
+            # Check for first tap
+            if distance < self.touch_threshold:
+                self.help_state = "FIRST_TAP"
+                self.first_tap_time = current_time
+                # Simplified - removed detailed state tracking
+        
+        elif self.help_state == "FIRST_TAP":
+            # Check if finger is moved away from temple
+            if distance > self.touch_threshold * 1.5:
+                self.help_state = "BETWEEN_TAPS"
+                # Simplified - removed detailed state tracking
+        
+        elif self.help_state == "BETWEEN_TAPS":
+            # Check minimum time between taps
+            time_between = current_time - self.first_tap_time
+            if time_between >= self.help_min_between_time:
+                # Check for second tap
+                if distance < self.touch_threshold:
+                    self.help_state = "SECOND_TAP"
+                    # Simplified - removed detailed state tracking
+                    # Emit help signal
+                    self.help_signal.emit()
+                    self.update_debug_and_trigger("Help (Double tap on right temple)")
             else:
-                # No starting pose yet
-                if self.gesture_performed:
-                    self.debug_info += "\nWaiting for starting pose again before next gesture"
-                else:
-                    self.debug_info += "\nWaiting for starting pose..."
-                return  # Exit early if we need to see starting pose first
-            
-        # Process gestures only if we're in the waiting_for_gesture state
-        if self.waiting_for_gesture:
-            current_time = time.time()
-            
-            # Check if the finger is touching any part
-            current_touch = None
-            if right_index_tip:  # Only try touch detection if we have a right index finger
-                current_touch = self.detect_touch(right_index_tip, pose_landmarks, left_hand)
-            
-            self.debug_info += f"\nCurrent touch: {current_touch if current_touch else 'None'}"
-            
-            # Reset sequence if timeout has passed
-            if self.sequence and (current_time - self.sequence_start_time > self.sequence_timeout):
-                self.debug_info += "\nSequence timeout, resetting"
-                self.sequence = []
-                # We don't reset waiting_for_gesture even when timeout happens
-                # This allows gestures to continue until hand explicitly leaves the starting pose
-                return
-            
-            # If a touch is detected
-            if current_touch:
-                # If this is a new touch or a repeat of the last touch after a brief pause
-                if not self.sequence or (
-                    current_touch == self.sequence[-1] and 
-                    current_time - self.last_touch_time > 0.3 and  # Ignore immediate repeats (less than 0.3s)
-                    current_time - self.last_touch_time < self.double_tap_threshold  # Must be within double tap window
-                ) or (
-                    current_touch != self.sequence[-1]  # Different touch
-                ):
-                    # If this is the first touch in a sequence, record the start time
-                    if not self.sequence:
-                        self.sequence_start_time = current_time
-                    
-                    # Add to sequence and update last touch time
-                    self.sequence.append(current_touch)
-                    self.last_touch_time = current_time
-                    
-                    # Update debug info
-                    time_since_last = ""
-                    if len(self.sequence) > 1:
-                        time_since_last = f"\nTime since last: {current_time - self.sequence_start_time:.2f}s"
-                    
-                    self.debug_info += f"\nTouch detected: {current_touch}\nSequence: {self.sequence}{time_since_last}"
-                    self.status_signal.emit(f"Touch: {current_touch}")
-                
-                # Check if sequence matches any command
-                self.check_command_sequence()
-            else:
-                # If no touch is detected but we have a sequence in progress
-                if self.sequence:
-                    time_since_last_touch = current_time - self.last_touch_time
-                    if time_since_last_touch > 1.5:  # 1.5 seconds with no touches
-                        self.debug_info += "\nNo touch detected for too long, resetting sequence"
-                        self.sequence = []
-                        # Don't reset waiting_for_gesture - we only do that when hand is explicitly not in starting pose
-                        # This is the key change to maintain gesture recognition capability
+                pass  # Simplified - removed detailed timing information
+        
+        elif self.help_state == "SECOND_TAP":
+            # Reset state if finger moved away
+            if distance > self.touch_threshold * 1.5:
+                self.help_state = "WAITING"
+                # Simplified - removed detailed state tracking
     
-    def detect_touch(self, right_index_tip, pose_landmarks, left_hand):
-        """Detect if right index finger is touching a specific body part or left hand"""
+    def detect_zoom_mode(self, left_hand):
+        """Detect Zoom Mode Activation: Left hand palm facing user with all fingers spread"""
+        # Check if all fingers are extended
+        thumb_extended = left_hand[4].y < left_hand[3].y  # Thumb tip is higher than thumb IP
+        index_extended = self.is_finger_extended(left_hand, 8, 6)  # Index tip vs PIP
+        middle_extended = self.is_finger_extended(left_hand, 12, 10)  # Middle tip vs PIP
+        ring_extended = self.is_finger_extended(left_hand, 16, 14)  # Ring tip vs PIP
+        pinky_extended = self.is_finger_extended(left_hand, 20, 18)  # Pinky tip vs PIP
         
-        # Get 3D coordinates of right index finger tip
-        tip_x, tip_y, tip_z = right_index_tip.x, right_index_tip.y, right_index_tip.z
+        # Check if fingers are sufficiently spread apart
+        thumb_to_index = self.calculate_distance(left_hand[4], left_hand[8])
+        index_to_middle = self.calculate_distance(left_hand[8], left_hand[12])
+        middle_to_ring = self.calculate_distance(left_hand[12], left_hand[16])
+        ring_to_pinky = self.calculate_distance(left_hand[16], left_hand[20])
         
-        # Check for touches of left hand fingers in zoom mode
-        if self.in_zoom_mode and left_hand:
-            # Check if touching left index finger (for increase gesture)
-            left_index_tip = left_hand.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-            left_index_distance = ((tip_x - left_index_tip.x) ** 2 + (tip_y - left_index_tip.y) ** 2) ** 0.5
-            if left_index_distance < self.touch_threshold:
-                self.debug_info += f"\nLeft index finger touched (distance: {left_index_distance:.3f})"
-                return "left_index_tip"
-            
-            # Check if touching left pinky finger (for decrease gesture)
-            left_pinky_tip = left_hand.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
-            left_pinky_distance = ((tip_x - left_pinky_tip.x) ** 2 + (tip_y - left_pinky_tip.y) ** 2) ** 0.5
-            if left_pinky_distance < self.touch_threshold:
-                self.debug_info += f"\nLeft pinky finger touched (distance: {left_pinky_distance:.3f})"
-                return "left_pinky_tip"
+        # Palm facing detection - simplified check based on relative z positions of palm and knuckles
+        palm_point = left_hand[0]  # Palm base landmark
+        index_mcp = left_hand[5]  # Index finger MCP (knuckle)
         
-        # Enhanced detection for right hip - for PREVIOUS gesture
-        right_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_HIP]
-        # Use a slightly larger threshold for hip detection
-        hip_threshold = self.touch_threshold * 1.5
-        hip_distance = ((tip_x - right_hip.x) ** 2 + (tip_y - right_hip.y) ** 2) ** 0.5
-        if hip_distance < hip_threshold:
-            self.debug_info += f"\nRight hip touched (distance: {hip_distance:.3f})"
-            return "right_hip"
+        # Check if palm is facing camera (palm point should be further from camera than knuckles)
+        palm_facing = palm_point.z < index_mcp.z
         
-        # Enhanced detection for left hip - for NEXT gesture
-        left_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP]
-        hip_distance = ((tip_x - left_hip.x) ** 2 + (tip_y - left_hip.y) ** 2) ** 0.5
-        if hip_distance < hip_threshold:
-            self.debug_info += f"\nLeft hip touched (distance: {hip_distance:.3f})"
-            return "left_hip"
+        # Simplified - removed detailed debug information
         
-        # MediaPipe's RIGHT_EYE is actually on the left side of the image when the person is facing the camera
-        # So for the user's right temple (from their perspective), we need to use LEFT_EYE
-        right_temple_x = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_EYE].x + 0.03
-        right_temple_y = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_EYE].y - 0.02
-        if self.is_touching(tip_x, tip_y, right_temple_x, right_temple_y):
-            # THIS is the actual right temple from the user's perspective
-            self.debug_info += "\nUser's right temple touch detected"
-            return "right_temple"
+        # All conditions must be true to activate zoom mode
+        all_fingers_extended = thumb_extended and index_extended and middle_extended and ring_extended and pinky_extended
+        fingers_spread = thumb_to_index > 0.05 and index_to_middle > 0.03 and middle_to_ring > 0.03 and ring_to_pinky > 0.03
         
-        return None
+        if all_fingers_extended and fingers_spread and palm_facing and not self.zoom_mode_active:
+            # Activate zoom mode
+            self.zoom_mode_active = True
+            self.update_debug_and_trigger("Zoom Mode Activated")
+        elif not (all_fingers_extended and fingers_spread and palm_facing) and self.zoom_mode_active:
+            # Deactivate zoom mode
+            self.zoom_mode_active = False
+            self.update_debug_and_trigger("Zoom Mode Deactivated")
     
-    def is_touching(self, x1, y1, x2, y2):
-        """Check if two points are close enough to be considered touching"""
-        distance = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
-        return distance < self.touch_threshold
+    def detect_zoom_gestures(self, left_hand, right_hand):
+        """Detect Zoom In/Out gestures when zoom mode is active"""
+        # Only process these gestures if zoom mode is active
+        if not self.zoom_mode_active:
+            return
         
-    # Elbow detection method removed - using hip touches for next/previous gestures
+        # Get finger tips
+        right_index_tip = right_hand[8]  # Right hand index finger tip
+        left_index_tip = left_hand[8]  # Left hand index finger tip
+        left_pinky_tip = left_hand[20]  # Left hand pinky finger tip
+        
+        # Calculate distances
+        right_to_left_index = self.calculate_distance(right_index_tip, left_index_tip)
+        right_to_left_pinky = self.calculate_distance(right_index_tip, left_pinky_tip)
+        
+        # Simplified - removed detailed debug information
+        
+        # Detect Zoom In (Increase) - right index touches left index
+        if right_to_left_index < self.finger_touch_threshold:
+            self.increase_signal.emit()
+            self.update_debug_and_trigger("Zoom In (Increase)")
+        
+        # Detect Zoom Out (Decrease) - right index touches left pinky
+        elif right_to_left_pinky < self.finger_touch_threshold:
+            self.decrease_signal.emit()
+            self.update_debug_and_trigger("Zoom Out (Decrease)")
     
-    def check_command_sequence(self):
-        """Check the sequence of gestures and execute commands"""
-        self.debug_info += f"\nCurrent sequence: {self.sequence}"
+    def detect_next_gesture(self, right_hand, pose_landmarks):
+        """Detect Next gesture: touch left hip with right index finger"""
+        # Get the coordinates of the right index finger tip and the left hip
+        index_tip = right_hand[8]  # Index finger tip
+        left_hip = pose_landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]
         
-        # Check if we're in zoom mode (special mode for increase/decrease gestures)
-        if self.in_zoom_mode:
-            self.debug_info += "\nIn INCREASE/DECREASE MODE - checking finger touches"
-            
-            # In zoom mode, we only recognize specific gestures
-            if len(self.sequence) == 1:
-                touch = self.sequence[0]
-                
-                # Increase - touch left index finger tip
-                if touch == "left_index_tip":
-                    self.debug_info += "\nINCREASE gesture detected (touched left index finger)"
-                    self.execute_command("Increase", self.increase_signal)
-                    
-                # Decrease - touch left pinky finger tip
-                elif touch == "left_pinky_tip":
-                    self.debug_info += "\nDECREASE gesture detected (touched left pinky finger)"
-                    self.execute_command("Decrease", self.decrease_signal)
-            
-            return  # Don't process normal gestures while in zoom mode
+        # Calculate distance
+        distance = self.calculate_distance(index_tip, left_hip)
         
-        # Normal mode - check for single-touch gestures
-        if len(self.sequence) == 1:
-            touch = self.sequence[0]
-            self.debug_info += f"\nChecking normal mode gesture: {touch}"
-            
-            # Next - left hip
-            if touch == "left_hip":
-                self.debug_info += "\nNEXT gesture detected (left hip)"
-                self.execute_command("Next", self.next_signal)
-                
-            # Previous - right hip
-            elif touch == "right_hip":
-                self.debug_info += "\nPREVIOUS gesture detected (right hip)"
-                self.execute_command("Previous", self.previous_signal)
+        # Simplified - removed detailed debug information
         
-        # Check for double taps (two of the same touch in sequence)
-        elif len(self.sequence) == 2:
-            touch1, touch2 = self.sequence
-            self.debug_info += f"\nDouble tap check: {touch1}, {touch2}"
-            
-            # Check if it's a double tap (same touch twice)
-            if touch1 == touch2:
-                # Double tap right temple - Help
-                if touch1 == "right_temple":
-                    self.debug_info += "\nHELP gesture detected (double tap right temple)"
-                    self.execute_command("Help", self.help_signal)
+        # Detect touch
+        if distance < self.touch_threshold:
+            self.next_signal.emit()
+            self.update_debug_and_trigger("Next (Left Hip Touch)")
     
-    def execute_command(self, command_name, signal):
-        """Execute a recognized command"""
-        self.debug_info += f"\nCommand: {command_name}"
-        self.status_signal.emit(f"Command: {command_name}")
+    def detect_previous_gesture(self, right_hand, pose_landmarks):
+        """Detect Previous gesture: touch right hip with right index finger"""
+        # Get the coordinates of the right index finger tip and the right hip
+        index_tip = right_hand[8]  # Index finger tip
+        right_hip = pose_landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]
         
-        # Reset the sequence after executing a command
-        self.sequence = []
+        # Calculate distance
+        distance = self.calculate_distance(index_tip, right_hip)
         
-        # Mark that we need the starting pose again before next gesture
-        self.waiting_for_gesture = False
-        self.gesture_performed = True
+        # Simplified - removed detailed debug information
         
-        # Emit the corresponding signal
-        signal.emit()
-        
-    def release(self):
-        """Release resources"""
-        if self.cap.isOpened():
-            self.cap.release()
-        
-        self.pose.close()
-        self.hands.close()
+        # Detect touch
+        if distance < self.touch_threshold:
+            self.previous_signal.emit()
+            self.update_debug_and_trigger("Previous (Right Hip Touch)")
