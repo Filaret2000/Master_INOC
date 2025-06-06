@@ -38,7 +38,7 @@ class GestureRecognizer(QObject):
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=2,
-            min_detection_confidence=0.5,
+            min_detection_confidence=0.7,
             min_tracking_confidence=0.5
         )
         
@@ -46,9 +46,12 @@ class GestureRecognizer(QObject):
             static_image_mode=False,
             model_complexity=1,
             enable_segmentation=False,
-            min_detection_confidence=0.5,
+            min_detection_confidence=0.7,
             min_tracking_confidence=0.5
         )
+        
+        # Variable to store current gesture text (for persistent display)
+        self.current_gesture_text = ""
         
         # Initialize variables for gesture detection
         self.last_gesture_time = time.time()
@@ -63,7 +66,7 @@ class GestureRecognizer(QObject):
         
         # Touch detection thresholds
         self.touch_threshold = 0.08  # General threshold for detecting touch
-        self.finger_touch_threshold = 0.05  # More precise threshold for finger-to-finger touches
+        self.finger_touch_threshold = 0.07  # Increased threshold for better finger-to-finger detection
         
         # State variables for double tap detection (for help gesture)
         self.help_state = "WAITING"  # States: WAITING, FIRST_TAP, BETWEEN_TAPS, SECOND_TAP
@@ -89,27 +92,39 @@ class GestureRecognizer(QObject):
             return
         
         # Read frame from webcam
-        success, frame = self.cap.read()
-        if not success:
-            self.status_signal.emit("Error: Couldn't read frame from camera")
+        ret, frame = self.cap.read()
+        if not ret:
             return
         
         # Mirror the frame horizontally for more intuitive interaction
         frame = cv2.flip(frame, 1)
         
-        # Convert the frame from BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Convert to RGB for MediaPipe
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Process the frame with MediaPipe Hands and Pose
-        hand_results = self.hands.process(frame_rgb)
-        pose_results = self.pose.process(frame_rgb)
-        
-        # Create a copy of the frame for visualization
+        # Clone the original BGR frame for drawing landmarks and debug info
+        # Using BGR frame for display to keep original camera colors
         debug_frame = frame.copy()
         
-        # Clear debug info for this frame - simplified version
+        # Reset debug info for detection, but keep gesture recognition message
+        old_gesture = None
+        if hasattr(self, 'current_gesture_text') and self.current_gesture_text:
+            old_gesture = self.current_gesture_text
+        self.debug_info = ""
+        
+        # Process the frame with MediaPipe Hands and Pose
+        hand_results = self.hands.process(rgb_frame)
+        pose_results = self.pose.process(rgb_frame)
+        
+        # Clear debug info for this frame but keep it structured
         self.debug_info = "Gesture Recognition Status\n"
         self.debug_info += "======================\n"
+        
+        # Add persistent gesture text if it exists
+        if hasattr(self, 'current_gesture_text') and self.current_gesture_text:
+            self.debug_info += "\n------------------------\n"
+            self.debug_info += f"{self.current_gesture_text}\n"
+            self.debug_info += "------------------------\n"
         
         # Check for gestures if the cooldown period has passed
         current_time = time.time()
@@ -138,10 +153,13 @@ class GestureRecognizer(QObject):
                 self.mp_drawing_styles.get_default_pose_landmarks_style()
             )
         
+        # Convert the BGR debug frame to RGB for QImage
+        rgb_debug_frame = cv2.cvtColor(debug_frame, cv2.COLOR_BGR2RGB)
+        
         # Convert the debug frame to QImage for display in debug window
-        h, w, ch = debug_frame.shape
+        h, w, ch = rgb_debug_frame.shape
         bytes_per_line = ch * w
-        convert_to_qt_format = QImage(debug_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        convert_to_qt_format = QImage(rgb_debug_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
         qt_image = convert_to_qt_format.scaled(640, 480)
         
         # Emit the signals for debug window
@@ -149,19 +167,15 @@ class GestureRecognizer(QObject):
         self.debug_text_signal.emit(self.debug_info)
 
     def detect_gestures(self, hand_results, pose_results, debug_frame):
-        """Detect various gestures based on hand and pose landmarks"""
-        # Check if we have both hand landmarks and pose landmarks
-        if not hand_results.multi_hand_landmarks or not pose_results.pose_landmarks:
-            self.debug_info += "No hand or pose landmarks detected\n"
-            return
-        
-        # Get pose landmarks
-        pose_landmarks = pose_results.pose_landmarks.landmark
-        
-        # Process hands
+        """Detect gestures based on hand and pose landmarks"""
+        # Initialize empty landmarks for left and right hands
         left_hand = None
         right_hand = None
+        pose_landmarks = pose_results.pose_landmarks.landmark if pose_results.pose_landmarks else None
         
+        if not hand_results.multi_hand_landmarks:
+            return
+            
         # Identify left and right hands based on MediaPipe's classification
         for i, hand_landmarks in enumerate(hand_results.multi_hand_landmarks):
             if i >= len(hand_results.multi_handedness):
@@ -187,12 +201,8 @@ class GestureRecognizer(QObject):
         if right_hand:
             self.detect_help_gesture(right_hand, pose_landmarks)
         
-        # Detect Zoom Mode Activation (left palm facing camera)
-        if left_hand:
-            self.detect_zoom_mode(left_hand)
-            
-        # If zoom mode is active, detect zoom in/out gestures
-        if self.zoom_mode_active and left_hand and right_hand:
+        # Detect Increase/Decrease gestures if both hands are visible
+        if left_hand and right_hand:
             self.detect_zoom_gestures(left_hand, right_hand)
         
         # Detect Next gesture (touch left hip with right index)
@@ -216,10 +226,15 @@ class GestureRecognizer(QObject):
     def update_debug_and_trigger(self, gesture_name):
         """Update the last gesture time, add to debug info, and emit status signal"""
         self.last_gesture_time = time.time()
+        
+        # Store the current gesture text for persistent display
+        self.current_gesture_text = f"GESTURE RECOGNIZED: {gesture_name}"
+        
         # Make the gesture detection more prominent in the debug window
         self.debug_info += "\n------------------------\n"
         self.debug_info += f"GESTURE RECOGNIZED: {gesture_name}\n"
         self.debug_info += "------------------------\n"
+        
         self.status_signal.emit(f"Gesture: {gesture_name}")
         
     def detect_help_gesture(self, right_hand, pose_landmarks):
@@ -313,11 +328,7 @@ class GestureRecognizer(QObject):
             self.update_debug_and_trigger("Zoom Mode Deactivated")
     
     def detect_zoom_gestures(self, left_hand, right_hand):
-        """Detect Zoom In/Out gestures when zoom mode is active"""
-        # Only process these gestures if zoom mode is active
-        if not self.zoom_mode_active:
-            return
-        
+        """Detect Increase/Decrease gestures based on finger touches"""
         # Get finger tips
         right_index_tip = right_hand[8]  # Right hand index finger tip
         left_index_tip = left_hand[8]  # Left hand index finger tip
@@ -327,17 +338,19 @@ class GestureRecognizer(QObject):
         right_to_left_index = self.calculate_distance(right_index_tip, left_index_tip)
         right_to_left_pinky = self.calculate_distance(right_index_tip, left_pinky_tip)
         
-        # Simplified - removed detailed debug information
+        # Add debug info for distances
+        self.debug_info += f"Index-to-Index distance: {right_to_left_index:.4f} (threshold: {self.finger_touch_threshold:.4f})\n"
+        self.debug_info += f"Index-to-Pinky distance: {right_to_left_pinky:.4f} (threshold: {self.finger_touch_threshold:.4f})\n"
         
-        # Detect Zoom In (Increase) - right index touches left index
+        # Detect Increase/Fullscreen - right index touches left index
         if right_to_left_index < self.finger_touch_threshold:
             self.increase_signal.emit()
-            self.update_debug_and_trigger("Zoom In (Increase)")
+            self.update_debug_and_trigger("Fullscreen Mode Activated")
         
-        # Detect Zoom Out (Decrease) - right index touches left pinky
+        # Detect Decrease/Normal view - right index touches left pinky
         elif right_to_left_pinky < self.finger_touch_threshold:
             self.decrease_signal.emit()
-            self.update_debug_and_trigger("Zoom Out (Decrease)")
+            self.update_debug_and_trigger("Normal View Restored")
     
     def detect_next_gesture(self, right_hand, pose_landmarks):
         """Detect Next gesture: touch left hip with right index finger"""

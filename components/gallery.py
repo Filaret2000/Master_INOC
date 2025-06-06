@@ -183,42 +183,48 @@ class GalleryComponent(QWidget):
     def zoom_in(self):
         self.add_to_history()
         
-        # Increase zoom factor by 20%
-        self.zoom_factor *= 1.2
+        # Set to true fullscreen mode
+        self.fullscreen_mode = True
         
-        # Cap the maximum zoom level to 5x
-        if self.zoom_factor > 5.0:
-            self.zoom_factor = 5.0
+        # Hide all UI elements except the image
+        self.image_counter.setVisible(False)
+        for button in self.all_buttons:
+            button.setVisible(False)
             
-        # Update display with new zoom
-        self.display_image()
+        # Maximize the image size
+        self.zoom_factor = 1.5  # Set to larger than normal to indicate fullscreen
         
-        # Only go into fullscreen mode if zoom is significantly increased
-        if self.zoom_factor >= 1.5 and not self.fullscreen_mode:
-            self.fullscreen_mode = True
-            # Hide buttons when in fullscreen mode
-            for button in self.all_buttons:
-                button.setVisible(False)
+        # Make sure we're only showing the image in the layout
+        self.image_label.setStyleSheet("""
+            QLabel {
+                background-color: black;
+                padding: 0;
+                margin: 0;
+            }
+        """)
+        
+        # Update display
+        self.display_image()
     
     def zoom_out(self):
         self.add_to_history()
         
-        # Decrease zoom factor by 20%
-        self.zoom_factor /= 1.2
+        # Exit fullscreen mode
+        self.fullscreen_mode = False
         
-        # Minimum zoom level
-        if self.zoom_factor < 0.5:
-            self.zoom_factor = 0.5
-            
-        # Update display with new zoom
+        # Restore zoom to normal
+        self.zoom_factor = 1.0
+        
+        # Show all UI elements again
+        self.image_counter.setVisible(True)
+        for button in self.all_buttons:
+            button.setVisible(True)
+        
+        # Reset image label styling
+        self.image_label.setStyleSheet("") 
+        
+        # Update display with normal view
         self.display_image()
-        
-        # Exit fullscreen mode if zoom is reduced enough
-        if self.zoom_factor <= 1.0 and self.fullscreen_mode:
-            self.fullscreen_mode = False
-            # Show buttons again when exiting fullscreen
-            for button in self.all_buttons:
-                button.setVisible(True)
     
     # Only keeping methods related to next, previous, help, increase, and decrease gestures
     
