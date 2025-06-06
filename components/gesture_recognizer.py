@@ -144,20 +144,46 @@ class GestureRecognizer(QObject):
                     self.mp_drawing_styles.get_default_hand_connections_style()
                 )
         
-        # Only draw the temple point on the right side of the mirrored frame
+        # Draw key pose landmarks on the debug frame (temple and hips)
         if pose_results.pose_landmarks:
-            # Extract the temple coordinates (using LEFT_EYE_OUTER since the frame is mirrored)
+            # Extract the landmark coordinates
             pose_landmarks = pose_results.pose_landmarks.landmark
-            temple_point = pose_landmarks[self.mp_pose.PoseLandmark.LEFT_EYE_OUTER.value]
+            temple_point = pose_landmarks[self.mp_pose.PoseLandmark.LEFT_EYE_OUTER.value]  # Mirrored, appears on right side
+            
+            # Get hip landmarks (left and right are swapped due to mirroring)
+            left_hip = pose_landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value]  # Appears on left side when mirrored
+            right_hip = pose_landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value]  # Appears on right side when mirrored
             
             # Convert normalized coordinates to pixel coordinates
             h, w, _ = debug_frame.shape
+            
+            # Temple point
             temple_x = int(temple_point.x * w)
             temple_y = int(temple_point.y * h)
             
-            # Draw a circle at the temple location
-            cv2.circle(debug_frame, (temple_x, temple_y), 8, (0, 0, 255), -1)  # Larger red circle
-            cv2.circle(debug_frame, (temple_x, temple_y), 4, (0, 255, 0), -1)  # Smaller green inner circle
+            # Hip points
+            left_hip_x = int(left_hip.x * w)
+            left_hip_y = int(left_hip.y * h)
+            right_hip_x = int(right_hip.x * w)
+            right_hip_y = int(right_hip.y * h)
+            
+            # Draw circles at the key points
+            # Temple - red circle with green center
+            cv2.circle(debug_frame, (temple_x, temple_y), 8, (0, 0, 255), -1)  # Red outer circle
+            cv2.circle(debug_frame, (temple_x, temple_y), 4, (0, 255, 0), -1)  # Green inner circle
+            
+            # Left hip (appears on left in mirrored view) - blue circle with yellow center
+            cv2.circle(debug_frame, (left_hip_x, left_hip_y), 8, (255, 0, 0), -1)  # Blue outer circle
+            cv2.circle(debug_frame, (left_hip_x, left_hip_y), 4, (0, 255, 255), -1)  # Yellow inner circle
+            
+            # Right hip (appears on right in mirrored view) - purple circle with cyan center
+            cv2.circle(debug_frame, (right_hip_x, right_hip_y), 8, (255, 0, 255), -1)  # Purple outer circle
+            cv2.circle(debug_frame, (right_hip_x, right_hip_y), 4, (255, 255, 0), -1)  # Cyan inner circle
+            
+            # Add labels next to the points
+            cv2.putText(debug_frame, "Temple", (temple_x + 10, temple_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.putText(debug_frame, "Left Hip", (left_hip_x + 10, left_hip_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+            cv2.putText(debug_frame, "Right Hip", (right_hip_x + 10, right_hip_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
         
         # Convert the BGR debug frame to RGB for QImage
         rgb_debug_frame = cv2.cvtColor(debug_frame, cv2.COLOR_BGR2RGB)

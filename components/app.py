@@ -15,7 +15,7 @@ class PhotoGalleryApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Photo Gallery with Gesture Recognition")
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(1600, 1000)  # Increased default window size
         
         # Load app logo
         self.setWindowIcon(QIcon(os.path.join("assets", "logo.png")))

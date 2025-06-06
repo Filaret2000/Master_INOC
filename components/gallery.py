@@ -183,6 +183,10 @@ class GalleryComponent(QWidget):
     def zoom_in(self):
         self.add_to_history()
         
+        # Toggle fullscreen mode - if already in fullscreen, do nothing
+        if self.fullscreen_mode:
+            return
+            
         # Set to true fullscreen mode
         self.fullscreen_mode = True
         
@@ -191,10 +195,11 @@ class GalleryComponent(QWidget):
         for button in self.all_buttons:
             button.setVisible(False)
             
-        # Maximize the image size
-        self.zoom_factor = 1.5  # Set to larger than normal to indicate fullscreen
+        # Store original zoom factor and set to specific fullscreen zoom level
+        self.original_zoom_factor = self.zoom_factor  # Store original zoom
+        self.zoom_factor = 2.0  # Fixed fullscreen zoom factor
         
-        # Make sure we're only showing the image in the layout
+        # Make sure we're only showing the image in the layout with black background
         self.image_label.setStyleSheet("""
             QLabel {
                 background-color: black;
@@ -203,17 +208,30 @@ class GalleryComponent(QWidget):
             }
         """)
         
+        # Enter application fullscreen mode
+        self.parentWidget().parentWidget().showFullScreen()
+        
         # Update display
         self.display_image()
     
     def zoom_out(self):
         self.add_to_history()
         
+        # Toggle normal mode - if not in fullscreen, do nothing
+        if not self.fullscreen_mode:
+            return
+            
         # Exit fullscreen mode
         self.fullscreen_mode = False
         
-        # Restore zoom to normal
-        self.zoom_factor = 1.0
+        # Exit application fullscreen mode
+        self.parentWidget().parentWidget().showNormal()
+        
+        # Restore original zoom factor
+        if hasattr(self, 'original_zoom_factor'):
+            self.zoom_factor = self.original_zoom_factor
+        else:
+            self.zoom_factor = 1.0
         
         # Show all UI elements again
         self.image_counter.setVisible(True)
