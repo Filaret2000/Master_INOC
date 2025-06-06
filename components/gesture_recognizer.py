@@ -171,17 +171,17 @@ class GestureRecognizer(QObject):
             handedness = hand_results.multi_handedness[i].classification[0].label
             landmarks = hand_landmarks.landmark
             
-            # Store landmarks based on handedness
-            if handedness == "Left":  # This is actually right hand in mirrored view
-                right_hand = landmarks
-            elif handedness == "Right":  # This is actually left hand in mirrored view
+            # Store landmarks based on handedness - corrected assignment
+            if handedness == "Left":  # Left hand in the camera view
                 left_hand = landmarks
+                self.debug_info += "Hand detected: LEFT\n"
+            elif handedness == "Right":  # Right hand in the camera view
+                right_hand = landmarks
+                self.debug_info += "Hand detected: RIGHT\n"
         
-        # Add simplified debug information about detected hands
-        self.debug_info += f"Left hand detected: {left_hand is not None}\n"
-        self.debug_info += f"Right hand detected: {right_hand is not None}\n"
+        # Add zoom mode status if active
         if self.zoom_mode_active:
-            self.debug_info += f"ZOOM MODE ACTIVE\n"
+            self.debug_info += "ZOOM MODE ACTIVE\n"
         
         # Detect Help gesture (double tap on right temple)
         if right_hand:
@@ -216,7 +216,10 @@ class GestureRecognizer(QObject):
     def update_debug_and_trigger(self, gesture_name):
         """Update the last gesture time, add to debug info, and emit status signal"""
         self.last_gesture_time = time.time()
-        self.debug_info += f"GESTURE DETECTED: {gesture_name}\n"
+        # Make the gesture detection more prominent in the debug window
+        self.debug_info += "\n------------------------\n"
+        self.debug_info += f"GESTURE RECOGNIZED: {gesture_name}\n"
+        self.debug_info += "------------------------\n"
         self.status_signal.emit(f"Gesture: {gesture_name}")
         
     def detect_help_gesture(self, right_hand, pose_landmarks):
@@ -345,8 +348,6 @@ class GestureRecognizer(QObject):
         # Calculate distance
         distance = self.calculate_distance(index_tip, left_hip)
         
-        # Simplified - removed detailed debug information
-        
         # Detect touch
         if distance < self.touch_threshold:
             self.next_signal.emit()
@@ -360,8 +361,6 @@ class GestureRecognizer(QObject):
         
         # Calculate distance
         distance = self.calculate_distance(index_tip, right_hip)
-        
-        # Simplified - removed detailed debug information
         
         # Detect touch
         if distance < self.touch_threshold:
