@@ -98,16 +98,17 @@ class GalleryComponent(QWidget):
         self.next_button.setStyleSheet(button_style)
         controls_layout.addWidget(self.next_button)
         
-        # Zoom in button (renamed to Fullscreen)
-        self.zoom_in_button = QPushButton("⛶ Fullscreen")
+        # Zoom in button renamed to Increase
+        self.zoom_in_button = QPushButton("⛶ Increase")
         self.zoom_in_button.clicked.connect(self.zoom_in)
         self.zoom_in_button.setStyleSheet(button_style)
         controls_layout.addWidget(self.zoom_in_button)
         
-        # Zoom out button (renamed to Normal View)
-        self.zoom_out_button = QPushButton("⊡ Normal")
+        # Zoom out button renamed to Decrease - hidden by default
+        self.zoom_out_button = QPushButton("⊡ Decrease")
         self.zoom_out_button.clicked.connect(self.zoom_out)
         self.zoom_out_button.setStyleSheet(button_style)
+        self.zoom_out_button.setVisible(False)  # Hide by default
         controls_layout.addWidget(self.zoom_out_button)
         
         # Add the controls container to the main layout
@@ -238,10 +239,14 @@ class GalleryComponent(QWidget):
         # Set to true fullscreen mode
         self.fullscreen_mode = True
         
-        # Hide all UI elements except the image
-        self.image_counter.setVisible(False)
+        # Hide only navigation UI elements, keep image counter visible
         for button in self.all_buttons:
-            button.setVisible(False)
+            if button != self.zoom_out_button:
+                button.setVisible(False)
+        
+        # Show the decrease button only in fullscreen mode
+        self.zoom_in_button.setVisible(False)
+        self.zoom_out_button.setVisible(True)
             
         # Store original zoom factor and set to specific fullscreen zoom level
         self.original_zoom_factor = self.zoom_factor  # Store original zoom
@@ -281,10 +286,11 @@ class GalleryComponent(QWidget):
         else:
             self.zoom_factor = 1.0
         
-        # Show all UI elements again
-        self.image_counter.setVisible(True)
-        for button in self.all_buttons:
-            button.setVisible(True)
+        # Show navigation buttons but hide the decrease button
+        self.prev_button.setVisible(True)
+        self.next_button.setVisible(True)
+        self.zoom_in_button.setVisible(True)  # Show increase button
+        self.zoom_out_button.setVisible(False)  # Hide decrease button
         
         # Reset image label styling
         self.image_label.setStyleSheet("") 
