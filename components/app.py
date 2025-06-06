@@ -17,6 +17,48 @@ class PhotoGalleryApp(QMainWindow):
         self.setWindowTitle("Photo Gallery with Gesture Recognition")
         self.setMinimumSize(1600, 1000)  # Increased default window size
         
+        # Modern window styling with improved color harmony
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f8f9fa;
+            }
+            QMenuBar {
+                background-color: #343a40;
+                color: #f8f9fa;
+                font-weight: bold;
+                padding: 6px;
+                border-bottom: 1px solid #495057;
+            }
+            QMenuBar::item {
+                background-color: transparent;
+                padding: 6px 12px;
+                margin: 0 2px;
+            }
+            QMenuBar::item:selected {
+                background-color: #495057;
+                border-radius: 4px;
+            }
+            QMenu {
+                background-color: #343a40;
+                color: #f8f9fa;
+                border: 1px solid #495057;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 24px 6px 12px;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #495057;
+            }
+        """)
+        
+        # Set central widget background color
+        centralPalette = self.palette()
+        centralPalette.setColor(self.backgroundRole(), Qt.white)
+        self.setPalette(centralPalette)
+        
         # Load app logo
         self.setWindowIcon(QIcon(os.path.join("assets", "logo.png")))
         
@@ -37,9 +79,8 @@ class PhotoGalleryApp(QMainWindow):
         self.gesture_timer.timeout.connect(self.process_gestures)
         self.gesture_timer.start(100)  # Process gestures every 100ms
         
-        # Current command status
-        self.status_label = QLabel("Ready")
-        self.statusBar().addWidget(self.status_label)
+        # Remove status bar completely
+        self.statusBar().hide()
         
         # Initialize help window
         self.help_window = None
@@ -133,7 +174,9 @@ class PhotoGalleryApp(QMainWindow):
         self.gesture_recognizer.process_frame()
         
     def update_status(self, status_text):
-        self.status_label.setText(status_text)
+        # Do not display gesture status texts in the status bar
+        # This removes the debug text at the bottom of the main window
+        pass
     
     def toggle_debug_window(self):
         # Toggle only debug window visibility
@@ -154,12 +197,10 @@ class PhotoGalleryApp(QMainWindow):
     def increase_size(self):
         # Increase the image size in gallery
         self.gallery.zoom_in()
-        self.status_label.setText("Image size increased")
         
     def decrease_size(self):
         # Decrease the image size in gallery
         self.gallery.zoom_out()
-        self.status_label.setText("Image size decreased")
         
     def on_ok_gesture(self):
         # Handle OK gesture - simple confirmation action
