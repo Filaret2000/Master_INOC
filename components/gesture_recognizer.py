@@ -144,14 +144,20 @@ class GestureRecognizer(QObject):
                     self.mp_drawing_styles.get_default_hand_connections_style()
                 )
         
-        # Draw pose landmarks on debug frame
+        # Only draw the temple point on the right side of the mirrored frame
         if pose_results.pose_landmarks:
-            self.mp_drawing.draw_landmarks(
-                debug_frame,
-                pose_results.pose_landmarks,
-                self.mp_pose.POSE_CONNECTIONS,
-                self.mp_drawing_styles.get_default_pose_landmarks_style()
-            )
+            # Extract the temple coordinates (using LEFT_EYE_OUTER since the frame is mirrored)
+            pose_landmarks = pose_results.pose_landmarks.landmark
+            temple_point = pose_landmarks[self.mp_pose.PoseLandmark.LEFT_EYE_OUTER.value]
+            
+            # Convert normalized coordinates to pixel coordinates
+            h, w, _ = debug_frame.shape
+            temple_x = int(temple_point.x * w)
+            temple_y = int(temple_point.y * h)
+            
+            # Draw a circle at the temple location
+            cv2.circle(debug_frame, (temple_x, temple_y), 8, (0, 0, 255), -1)  # Larger red circle
+            cv2.circle(debug_frame, (temple_x, temple_y), 4, (0, 255, 0), -1)  # Smaller green inner circle
         
         # Convert the BGR debug frame to RGB for QImage
         rgb_debug_frame = cv2.cvtColor(debug_frame, cv2.COLOR_BGR2RGB)
@@ -237,58 +243,72 @@ class GestureRecognizer(QObject):
         
         self.status_signal.emit(f"Gesture: {gesture_name}")
         
+    def calculate_temple_distance(self, index_tip, temple):
+        """Calculate 2D distance between finger tip and temple (ignoring Z)"""
+        # Focus mainly on X-Y plane as depth (Z) is less reliable
+        return np.sqrt((index_tip.x - temple.x)**2 + (index_tip.y - temple.y)**2) * 1.5
+    
     def detect_help_gesture(self, right_hand, pose_landmarks):
         """Detect Help gesture: Double tap on right temple with right index finger"""
-        # Get the coordinates of the right index finger tip and the right temple area
+        # Make sure we have pose landmarks for the temple
+        if not pose_landmarks:
+            return
+            
+        # Get the coordinates of the right index finger tip and the temple area
+        # Using LEFT_EYE_OUTER landmark since the frame is mirrored
         index_tip = right_hand[8]  # Index finger tip
-        temple = pose_landmarks[self.mp_pose.PoseLandmark.RIGHT_EYE_OUTER.value]  # Right temple area
+        temple = pose_landmarks[self.mp_pose.PoseLandmark.LEFT_EYE_OUTER.value]  # Temple area in mirrored view
         
-        # Calculate distance between index tip and temple
-        distance = self.calculate_distance(index_tip, temple)
+        # Define temple threshold for help gesture (more sensitive than general touch)  
+        temple_threshold = 0.1
         
-        # Simplified debug info - removed detailed measurements
+        # Use specialized 2D distance calculation for temple touch
+        distance = self.calculate_temple_distance(index_tip, temple)
+        
+        # Add debug info for temple distance
+        self.debug_info += f"Temple touch distance: {distance:.4f} (threshold: {temple_threshold:.4f})\n"
         
         # State machine for double tap detection
         current_time = time.time()
         
         # Check for timeout in any intermediate state
         if self.help_state != "WAITING" and current_time - self.first_tap_time > self.help_max_time:
-            # Simplified - removed detailed state tracking
             self.help_state = "WAITING"
+            self.debug_info += "Help gesture timed out\n"
         
         # State machine logic
         if self.help_state == "WAITING":
             # Check for first tap
-            if distance < self.touch_threshold:
+            if distance < temple_threshold:
                 self.help_state = "FIRST_TAP"
                 self.first_tap_time = current_time
-                # Simplified - removed detailed state tracking
+                self.debug_info += "First tap detected\n"
         
         elif self.help_state == "FIRST_TAP":
             # Check if finger is moved away from temple
-            if distance > self.touch_threshold * 1.5:
+            if distance > temple_threshold * 1.5:
                 self.help_state = "BETWEEN_TAPS"
-                # Simplified - removed detailed state tracking
+                self.debug_info += "Finger moved away from temple\n"
         
         elif self.help_state == "BETWEEN_TAPS":
             # Check minimum time between taps
             time_between = current_time - self.first_tap_time
             if time_between >= self.help_min_between_time:
                 # Check for second tap
-                if distance < self.touch_threshold:
+                if distance < temple_threshold:
                     self.help_state = "SECOND_TAP"
-                    # Simplified - removed detailed state tracking
+                    self.debug_info += "Second tap detected\n"
                     # Emit help signal
                     self.help_signal.emit()
                     self.update_debug_and_trigger("Help (Double tap on right temple)")
             else:
-                pass  # Simplified - removed detailed timing information
+                self.debug_info += f"Waiting for minimum tap interval: {time_between:.2f}s\n"
         
         elif self.help_state == "SECOND_TAP":
             # Reset state if finger moved away
-            if distance > self.touch_threshold * 1.5:
+            if distance > temple_threshold * 1.5:
                 self.help_state = "WAITING"
-                # Simplified - removed detailed state tracking
+                self.debug_info += "Help gesture completed\n"
     
     def detect_zoom_mode(self, left_hand):
         """Detect Zoom Mode Activation: Left hand palm facing user with all fingers spread"""
